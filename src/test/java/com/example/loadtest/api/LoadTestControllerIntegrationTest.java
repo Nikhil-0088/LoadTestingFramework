@@ -52,4 +52,16 @@ class LoadTestControllerIntegrationTest {
                 .andExpect(jsonPath("$.workRequestStatus").value("ACCEPTED"))
                 .andExpect(jsonPath("$.currentStep").value("VALIDATE"));
     }
+
+    @Test
+    void returnsFieldErrorsForInvalidRequest() throws Exception {
+        mockMvc.perform(post("/api/v1/load-tests")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"\",\"durationSeconds\":0,\"requestsPerMinute\":0,\"requests\":[]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.name").exists())
+                .andExpect(jsonPath("$.fieldErrors.durationSeconds").exists())
+                .andExpect(jsonPath("$.fieldErrors.requestsPerMinute").exists());
+    }
 }
