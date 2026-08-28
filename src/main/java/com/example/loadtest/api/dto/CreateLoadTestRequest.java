@@ -10,6 +10,5 @@ public record CreateLoadTestRequest(
         @NotBlank String name,
         @Min(1) int durationSeconds,
         @Min(1) int requestsPerMinute,
-        @Min(1) int workerCount,
         @NotEmpty List<@Valid RequestDefinitionRequest> requests) {
 }

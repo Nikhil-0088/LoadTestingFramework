@@ -5,6 +5,7 @@ import com.example.loadtest.api.dto.CreateLoadTestRequest;
 import com.example.loadtest.api.dto.CreateLoadTestResponse;
 import com.example.loadtest.api.dto.LoadTestStatusResponse;
 import com.example.loadtest.api.dto.RequestDefinitionRequest;
+import com.example.loadtest.config.WorkerCapacityProperties;
 import com.example.loadtest.model.AuthenticationType;
 import com.example.loadtest.model.LoadTest;
 import com.example.loadtest.model.LoadTestStatus;
@@ -27,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class LoadTestService {
     private final LoadTestRepository loadTestRepository;
     private final WorkRequestRepository workRequestRepository;
+    private final WorkerCapacityProperties workerCapacityProperties;
 
     @Transactional
     public CreateLoadTestResponse create(CreateLoadTestRequest request) {
@@ -39,7 +41,7 @@ public class LoadTestService {
         loadTest.setStatus(LoadTestStatus.ACCEPTED);
         loadTest.setDurationSeconds(request.durationSeconds());
         loadTest.setRequestsPerMinute(request.requestsPerMinute());
-        loadTest.setWorkerCount(request.workerCount());
+        loadTest.setWorkerCount(calculateWorkerCount(request.requestsPerMinute()));
         loadTest.setCreatedAt(now);
 
         for (RequestDefinitionRequest requestDefinition : request.requests()) {
@@ -102,5 +104,16 @@ public class LoadTestService {
                 throw new IllegalArgumentException("Request URL must be an absolute HTTP or HTTPS URL: " + definition.url());
             }
         }
+    }
+
+    private int calculateWorkerCount(int requestsPerMinute) {
+        int perWorkerCapacity = workerCapacityProperties.getMaxRequestsPerMinute();
+        int requiredWorkers = (int) ((requestsPerMinute + (long) perWorkerCapacity - 1) / perWorkerCapacity);
+        if (requiredWorkers > workerCapacityProperties.getMaxWorkersPerTest()) {
+            throw new IllegalArgumentException(
+                    "Requested RPM needs " + requiredWorkers + " workers, exceeding the configured maximum of "
+                            + workerCapacityProperties.getMaxWorkersPerTest());
+        }
+        return requiredWorkers;
     }
 }

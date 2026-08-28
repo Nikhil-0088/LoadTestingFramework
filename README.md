@@ -239,3 +239,5 @@ HTTP 202 Accepted response
 POST /api/v1/load-tests
 GET  /api/v1/load-tests/{loadTestId}
 ```
+
+Clients provide RPM and duration, not a worker count. The service calculates `workerCount = ceil(RPM / maxRequestsPerMinutePerWorker)` and persists that internal plan. The initial local capacity is configured in `application.properties` as `loadtest.worker.max-requests-per-minute=1000`; tune it after measuring the real capacity of one worker against representative target APIs.

@@ -25,7 +25,6 @@ class LoadTestControllerIntegrationTest {
                   "name": "Example API test",
                   "durationSeconds": 60,
                   "requestsPerMinute": 120,
-                  "workerCount": 2,
                   "requests": [{
                     "name": "health",
                     "method": "GET",
