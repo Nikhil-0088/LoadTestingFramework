@@ -36,6 +36,7 @@ public class WorkRequest {
     private Instant nextAttemptAt;
     private String leaseOwner;
     private Instant leaseUntil;
+    private long leaseGeneration;
     private String lastError;
     @Version
     private long version;

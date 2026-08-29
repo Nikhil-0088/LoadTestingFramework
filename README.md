@@ -1,13 +1,11 @@
 # Load Test Service
 
-This is a V1 Java 17 and Spring Boot load-testing service. It accepts a load-test request, persists the request and its workflow state in MySQL, and exposes an API to check its current status.
-
-The worker execution workflow will be added next. The current foundation is intentionally focused on a durable database schema and a small REST API.
+This is a V1 Java 17 and Spring Boot load-testing service. It accepts a load-test request, persists workflow state in MySQL, runs local Java worker threads, and exposes APIs to check status and final aggregate metrics.
 
 ## Architecutre at glance
-LLD :- https://lucid.app/lucidchart/f2027b8d-3fd7-43ee-9aad-e128f2953263/edit?page=0_0#
-HLD:- https://lucid.app/lucidchart/a5348673-7c50-4b7d-8462-94423fec7725/edit?page=0_0&invitationId=inv_5b974e9b-bebe-49bf-ba74-9a94df86967f#
-Workflow Steps:- https://lucid.app/lucidchart/9a864740-e356-44a4-afd4-99f7b34acd6f/edit?page=0_0&invitationId=inv_d566e09f-91ca-46fa-ae6f-fd415aacde03#
+LLD :- https://lucid.app/lucidchart/f2027b8d-3fd7-43ee-9aad-e128f2953263/edit?page=0_0#.
+HLD:- https://lucid.app/lucidchart/a5348673-7c50-4b7d-8462-94423fec7725/edit?page=0_0&invitationId=inv_5b974e9b-bebe-49bf-ba74-9a94df86967f#.
+Workflow Steps:- https://lucid.app/lucidchart/9a864740-e356-44a4-afd4-99f7b34acd6f/edit?page=0_0&invitationId=inv_d566e09f-91ca-46fa-ae6f-fd415aacde03#.
 
 ## Dependecies Used at a glance
 
@@ -17,7 +15,7 @@ Mac
       └─ MySQL container
           └─ load_test database
 
-Spring Boot application on the Mac
+Spring Boot applicatiofn on the Mac
   └─ jdbc:mysql://localhost:3306/load_test
 ```
 
@@ -208,7 +206,7 @@ Invalid input returns `400 Bad Request` instead of creating incomplete database 
 | `*-test` dependencies | Spring Boot testing support for web, JPA, Flyway, validation, and Actuator. |
 
 Maven starters are bundles of compatible libraries. For example, `spring-boot-starter-data-jpa` also brings in Hibernate and HikariCP, the database connection pool.
-
+[LocalWorkerRuntime.java](src/main/java/com/example/loadtest/service/LocalWorkerRuntime.java)
 ## Request flow
 
 ```text
@@ -217,7 +215,7 @@ HTTP JSON request
 Tomcat receives the request
   ↓
 Spring MVC routes it to LoadTestController
-  ↓
+  ↓[LocalWorkerRuntime.java](src/main/java/com/example/loadtest/service/LocalWorkerRuntime.java)
 Jackson converts JSON to a request DTO
   ↓
 Jakarta Validation validates the DTO
@@ -240,4 +238,158 @@ POST /api/v1/load-tests
 GET  /api/v1/load-tests/{loadTestId}
 ```
 
-Clients provide RPM and duration, not a worker count. The service calculates `workerCount = ceil(RPM / maxRequestsPerMinutePerWorker)` and persists that internal plan. The initial local capacity is configured in `application.properties` as `loadtest.worker.max-requests-per-minute=1000`; tune it after measuring the real capacity of one worker against representative target APIs.
+
+## Run a local smoke test
+
+Use this test to verify the complete V1 workflow without any external authentication or HTTPS certificate setup. It makes requests to this application's own Actuator health endpoint.
+
+Start MySQL and the application first:
+
+```zsh
+docker compose up -d
+./mvnw spring-boot:run
+```
+
+In a second terminal, create a two-minute test at 300 RPM (5 requests per second). The expected total is  `300 / 60 * 120 = 600` requests.
+
+```zsh
+curl -i -X POST 'http://localhost:8080/api/v1/load-tests' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "local actuator smoke test",
+    "durationSeconds": 120,
+    "requestsPerMinute": 300,
+    "requests": [
+      {
+        "name": "local actuator health",
+        "method": "GET",
+        "url": "http://localhost:8080/actuator/health",
+        "headers": {
+          "Accept": "application/json"
+        },
+        "authentication": {
+          "type": "NONE"
+        }
+      }
+    ]
+  }'
+```
+
+The response is `202 Accepted`. Copy its `loadTestId` value:
+
+```json
+{
+  "loadTestId": "<load-test-id>",
+  "workRequestId": "<work-request-id>",
+  "loadTestStatus": "ACCEPTED",
+  "workRequestStatus": "ACCEPTED"
+}
+```
+
+Check progress while the test runs:
+
+```zsh
+curl -s 'http://localhost:8080/api/v1/load-tests/<load-test-id>'
+```
+
+During execution, the important fields are:
+
+```json
+{
+  "loadTestStatus": "RUNNING",
+  "workRequestStatus": "RUNNING",
+  "currentStep": "RUN_LOAD",
+  "totalRequests": null
+}
+```
+
+After the duration and cleanup complete, run the same GET request again. A successful result looks like:
+
+```json
+{
+  "loadTestStatus": "COMPLETED",
+  "workRequestStatus": "COMPLETED",
+  "currentStep": "COMPLETE",
+  "totalRequests": 600,
+  "successfulRequests": 600,
+  "failedRequests": 0,
+  "statusCodeCounts": {
+    "200": 600
+  }
+}
+```
+
+The exact total can be slightly lower if the target cannot respond fast enough. The worker schedules requests at the configured rate; it does not burst extra requests to catch up.
+
+### Watch the database while a test runs
+
+Open MySQL in another terminal:
+
+```zsh
+docker compose exec mysql mysql -u loadtest -p load_test
+```
+
+Enter the local password `loadtest_dev_password`, then run these queries. Replace `<load-test-id>` with the ID returned from the POST response.
+
+```sql
+-- Load-test and workflow state.
+SELECT
+    load_test.id,
+    load_test.name,
+    load_test.status AS load_test_status,
+    load_test.started_at,
+    load_test.ends_at,
+    work_request.id AS work_request_id,
+    work_request.status AS work_request_status,
+    work_request.current_step,
+    work_request.lease_owner,
+    work_request.lease_until,
+    work_request.lease_generation
+FROM load_tests AS load_test
+JOIN work_requests AS work_request ON work_request.load_test_id = load_test.id
+WHERE load_test.id = '<load-test-id>'\G
+
+-- Local worker state and heartbeat.
+SELECT
+    id,
+    status,
+    owner_node_id,
+    allocated_requests_per_minute,
+    started_at,
+    completed_at,
+    last_heartbeat,
+    last_error
+FROM workers
+WHERE load_test_id = '<load-test-id>'\G
+
+-- Latest metric snapshots. A worker writes these about every five seconds.
+SELECT
+    worker_id,
+    captured_at,
+    total_requests,
+    successful_requests,
+    failed_requests,
+    status_code_counts
+FROM worker_metric_snapshots
+WHERE worker_id IN (
+    SELECT id FROM workers WHERE load_test_id = '<load-test-id>'
+)
+ORDER BY captured_at DESC;
+
+-- Durable workflow events created for worker start and stop.
+SELECT id, event_type, status, created_at, processed_at, last_error
+FROM workflow_events
+WHERE work_request_id = (
+    SELECT id FROM work_requests WHERE load_test_id = '<load-test-id>'
+);
+
+-- Final aggregate, available after COLLECT_RESULTS.
+SELECT
+    total_requests,
+    successful_requests,
+    failed_requests,
+    status_code_counts,
+    collected_at
+FROM load_test_results
+WHERE load_test_id = '<load-test-id>'\
+```
