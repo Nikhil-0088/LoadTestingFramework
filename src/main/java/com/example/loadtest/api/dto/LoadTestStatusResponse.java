@@ -4,6 +4,7 @@ import com.example.loadtest.model.LoadTestStatus;
 import com.example.loadtest.model.WorkRequestStatus;
 import com.example.loadtest.model.WorkflowStep;
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 public record LoadTestStatusResponse(
@@ -17,5 +18,9 @@ public record LoadTestStatusResponse(
         UUID workRequestId,
         WorkRequestStatus workRequestStatus,
         WorkflowStep currentStep,
-        String failureReason) {
+        String failureReason,
+        Long totalRequests,
+        Long successfulRequests,
+        Long failedRequests,
+        Map<String, Long> statusCodeCounts) {
 }

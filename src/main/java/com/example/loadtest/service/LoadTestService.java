@@ -9,15 +9,18 @@ import com.example.loadtest.config.WorkerCapacityProperties;
 import com.example.loadtest.model.AuthenticationType;
 import com.example.loadtest.model.LoadTest;
 import com.example.loadtest.model.LoadTestStatus;
+import com.example.loadtest.model.LoadTestResult;
 import com.example.loadtest.model.RequestDefinition;
 import com.example.loadtest.model.WorkRequest;
 import com.example.loadtest.model.WorkRequestStatus;
 import com.example.loadtest.model.WorkflowStep;
 import com.example.loadtest.repository.LoadTestRepository;
+import com.example.loadtest.repository.LoadTestResultRepository;
 import com.example.loadtest.repository.WorkRequestRepository;
 import java.net.URI;
 import java.time.Instant;
 import java.util.NoSuchElementException;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -27,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class LoadTestService {
     private final LoadTestRepository loadTestRepository;
+    private final LoadTestResultRepository loadTestResultRepository;
     private final WorkRequestRepository workRequestRepository;
     private final WorkerCapacityProperties workerCapacityProperties;
 
@@ -69,10 +73,15 @@ public class LoadTestService {
                 .orElseThrow(() -> new NoSuchElementException("Load test not found: " + loadTestId));
         WorkRequest workRequest = workRequestRepository.findByLoadTestId(loadTestId)
                 .orElseThrow(() -> new IllegalStateException("Work request missing for load test: " + loadTestId));
+        LoadTestResult result = loadTestResultRepository.findById(loadTestId).orElse(null);
         return new LoadTestStatusResponse(
                 loadTest.getId(), loadTest.getName(), loadTest.getStatus(),
                 loadTest.getCreatedAt(), loadTest.getStartedAt(), loadTest.getEndsAt(), loadTest.getCompletedAt(),
-                workRequest.getId(), workRequest.getStatus(), workRequest.getCurrentStep(), loadTest.getFailureReason());
+                workRequest.getId(), workRequest.getStatus(), workRequest.getCurrentStep(), loadTest.getFailureReason(),
+                result == null ? null : result.getTotalRequests(),
+                result == null ? null : result.getSuccessfulRequests(),
+                result == null ? null : result.getFailedRequests(),
+                result == null ? null : Map.copyOf(result.getStatusCodeCounts()));
     }
 
     private RequestDefinition toEntity(RequestDefinitionRequest source) {
