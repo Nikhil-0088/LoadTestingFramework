@@ -36,4 +36,6 @@ public class RequestDefinition {
     private AuthenticationType authType;
     private String authSecretReference;
     private String apiKeyHeaderName;
+    @Enumerated(EnumType.STRING)
+    private ApiKeyLocation apiKeyLocation;
 }

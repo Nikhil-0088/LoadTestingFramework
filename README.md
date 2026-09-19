@@ -201,6 +201,7 @@ Invalid input returns `400 Bad Request` instead of creating incomplete database 
 | `spring-boot-starter-flyway` and `flyway-mysql` | Versioned MySQL schema migrations. |
 | `mysql-connector-j` | JDBC driver that allows Java to connect to MySQL. |
 | `spring-boot-starter-actuator` | Operational endpoints such as `/actuator/health`. |
+| `spring-retry` | Bounded retry and backoff for transient target-validation failures. |
 | `lombok` | Compile-time generation of repetitive Java code. |
 | `h2` (test scope) | Temporary in-memory database used only by automated tests. |
 | `*-test` dependencies | Spring Boot testing support for web, JPA, Flyway, validation, and Actuator. |
@@ -237,6 +238,98 @@ HTTP 202 Accepted response
 POST /api/v1/load-tests
 GET  /api/v1/load-tests/{loadTestId}
 ```
+
+## Authentication in a load-test request
+
+V1 supports these outbound target-API authentication types:
+
+| `authentication.type` | How the worker sends it | Required request fields | Secret value format |
+|---|---|---|---|
+| `NONE` | No authentication is added. | `type` | Not applicable. |
+| `BASIC` | `Authorization: Basic <base64(username:password)>` | `type`, `secretReference` | `username:password` |
+| `BEARER_TOKEN` | `Authorization: Bearer <token>` | `type`, `secretReference` | Access token only, without `Bearer `. |
+| `API_KEY` | A configured HTTP header or URL query parameter. | `type`, `secretReference`, `apiKeyHeaderName`, `apiKeyLocation` | API-key value only. |
+
+The POST API never accepts a raw password, token, or API key. It stores only a reference, so secrets are not written to MySQL or returned by the API.
+
+For local development, the currently supported reference format is:
+
+```text
+env:LOADTEST_SECRET_<NAME>
+```
+
+The person who starts Spring Boot sets the real secret in the process environment **before** starting the application:
+
+```zsh
+# Basic authentication: username:password
+export LOADTEST_SECRET_BASIC='demo-user:demo-password'
+
+# Bearer token: do not include the literal "Bearer " prefix.
+export LOADTEST_SECRET_BEARER='example-access-token'
+
+# API key: value only.
+export LOADTEST_SECRET_API_KEY='example-api-key'
+
+./mvnw spring-boot:run
+```
+
+`env:` is appropriate for local development only. In a future OCI or AWS deployment, the same `secretReference` abstraction should resolve an approved Vault or Secrets Manager reference using the worker's cloud identity. Do not put real secrets in `application.properties`, shell history, Git, or a request body.
+
+### How the smoke-test request body changes
+
+The unauthenticated smoke test below uses:
+
+```json
+"authentication": {
+  "type": "NONE"
+}
+```
+
+Replace only that `authentication` object with one of the following objects when the target API requires authentication.
+
+**Basic authentication**
+
+```json
+"authentication": {
+  "type": "BASIC",
+  "secretReference": "env:LOADTEST_SECRET_BASIC"
+}
+```
+
+**Bearer-token authentication**
+
+```json
+"authentication": {
+  "type": "BEARER_TOKEN",
+  "secretReference": "env:LOADTEST_SECRET_BEARER"
+}
+```
+
+**API key in a header** — for example, the target expects `X-API-Key: <value>`.
+
+```json
+"authentication": {
+  "type": "API_KEY",
+  "secretReference": "env:LOADTEST_SECRET_API_KEY",
+  "apiKeyHeaderName": "X-API-Key",
+  "apiKeyLocation": "HEADER"
+}
+```
+
+**API key in a query parameter** — for example, the target expects `?api_key=<value>`.
+
+```json
+"authentication": {
+  "type": "API_KEY",
+  "secretReference": "env:LOADTEST_SECRET_API_KEY",
+  "apiKeyHeaderName": "api_key",
+  "apiKeyLocation": "QUERY_PARAMETER"
+}
+```
+
+`apiKeyHeaderName` is currently the API-key *field name*: it is used as the HTTP header name for `HEADER`, or as the query-parameter name for `QUERY_PARAMETER`. We can rename this field to `apiKeyName` in a later API-version cleanup.
+
+During the workflow `VALIDATE` step, a `401 Unauthorized` fails immediately with guidance to check authentication; a `404 Not Found` fails immediately with guidance to check the target URL/path. Transient network failures and `5xx` responses are retried three times before the test fails. The reason is returned as `failureReason` from the GET status API.
 
 
 ## Run a local smoke test

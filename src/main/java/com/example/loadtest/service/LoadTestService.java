@@ -95,10 +95,23 @@ public class LoadTestService {
         AuthenticationRequest authentication = source.authentication();
         target.setAuthType(authentication == null ? AuthenticationType.NONE : authentication.type());
         if (authentication != null) {
+            validateAuthentication(authentication);
             target.setAuthSecretReference(authentication.secretReference());
             target.setApiKeyHeaderName(authentication.apiKeyHeaderName());
+            target.setApiKeyLocation(authentication.apiKeyLocation());
         }
         return target;
+    }
+
+    private void validateAuthentication(AuthenticationRequest authentication) {
+        if (authentication.type() == AuthenticationType.NONE) return;
+        if (authentication.secretReference() == null || authentication.secretReference().isBlank()) {
+            throw new IllegalArgumentException("Authentication type " + authentication.type() + " requires secretReference");
+        }
+        if (authentication.type() == AuthenticationType.API_KEY
+                && (authentication.apiKeyHeaderName() == null || authentication.apiKeyHeaderName().isBlank())) {
+            throw new IllegalArgumentException("API_KEY authentication requires apiKeyHeaderName");
+        }
     }
 
     private void validateTargetUrls(CreateLoadTestRequest request) {
