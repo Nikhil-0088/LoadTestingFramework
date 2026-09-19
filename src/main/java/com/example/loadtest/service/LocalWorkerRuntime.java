@@ -32,6 +32,7 @@ public class LocalWorkerRuntime {
     private final WorkerRepository workerRepository;
     private final RequestDefinitionRepository requestDefinitionRepository;
     private final WorkerMetricSnapshotRepository snapshotRepository;
+    private final RequestAuthenticationApplier requestAuthenticationApplier;
     private final Executor executor;
     private final java.util.Set<UUID> active = ConcurrentHashMap.newKeySet();
     private final HttpClient client = HttpClient.newHttpClient();
@@ -40,10 +41,12 @@ public class LocalWorkerRuntime {
             WorkerRepository workerRepository,
             RequestDefinitionRepository requestDefinitionRepository,
             WorkerMetricSnapshotRepository snapshotRepository,
+            RequestAuthenticationApplier requestAuthenticationApplier,
             @Qualifier("localWorkerTaskExecutor") Executor executor) {
         this.workerRepository = workerRepository;
         this.requestDefinitionRepository = requestDefinitionRepository;
         this.snapshotRepository = snapshotRepository;
+        this.requestAuthenticationApplier = requestAuthenticationApplier;
         this.executor = executor;
     }
 
@@ -99,8 +102,9 @@ public class LocalWorkerRuntime {
 
     private void send(RequestDefinition definition, AtomicLong total, AtomicLong success, AtomicLong failed, Map<String, AtomicLong> codes) {
         try {
-            HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(definition.getUrl()));
+            HttpRequest.Builder request = HttpRequest.newBuilder(requestAuthenticationApplier.authenticatedUri(definition));
             if (definition.getHeaders() != null) definition.getHeaders().forEach(request::header);
+            requestAuthenticationApplier.applyHeaders(definition, request);
             request.method(definition.getHttpMethod(), definition.getBody() == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(definition.getBody()));
             int status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
             total.incrementAndGet(); codes.computeIfAbsent(String.valueOf(status), unused -> new AtomicLong()).incrementAndGet();

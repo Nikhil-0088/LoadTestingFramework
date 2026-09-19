@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +26,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class WorkflowEngine {
     private static final Duration RECHECK_DELAY = Duration.ofSeconds(1);
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    private static final RetryTemplate VALIDATION_RETRY = RetryTemplate.builder()
+            .maxAttempts(3)
+            .exponentialBackoff(250, 2, 1_000)
+            .retryOn(RetryableTargetValidationException.class)
+            .build();
 
     private final WorkRequestRepository workRequestRepository;
     private final WorkerRepository workerRepository;
@@ -33,6 +39,7 @@ public class WorkflowEngine {
     private final LoadTestResultRepository loadTestResultRepository;
     private final WorkflowLeaseGuard leaseGuard;
     private final LocalWorkerRuntime localWorkerRuntime;
+    private final RequestAuthenticationApplier requestAuthenticationApplier;
 
     @Transactional
     public void execute(WorkflowLease lease) {
@@ -100,25 +107,54 @@ public class WorkflowEngine {
     }
 
     private void validateTarget(RequestDefinition definition) {
-        if (definition.getAuthType() != null && definition.getAuthType() != AuthenticationType.NONE) {
-            throw new IllegalArgumentException("V1 cannot resolve authentication secret references yet");
-        }
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(definition.getUrl())).timeout(Duration.ofSeconds(10));
+        HttpRequest.Builder builder = HttpRequest.newBuilder(requestAuthenticationApplier.authenticatedUri(definition))
+                .timeout(Duration.ofSeconds(10));
         if (definition.getHeaders() != null) definition.getHeaders().forEach(builder::header);
+        requestAuthenticationApplier.applyHeaders(definition, builder);
         builder.method(definition.getHttpMethod(), definition.getBody() == null || definition.getBody().isBlank()
                 ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(definition.getBody()));
-        IOException lastFailure = null;
-        for (int attempt = 0; attempt < 3; attempt++) {
-            try {
-                if (HTTP.send(builder.build(), HttpResponse.BodyHandlers.discarding()).statusCode() < 500) return;
-            } catch (IOException exception) {
-                lastFailure = exception;
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("Validation interrupted", exception);
-            }
+        HttpRequest request = builder.build();
+        try {
+            VALIDATION_RETRY.execute(context -> {
+                validateTargetAttempt(definition, request);
+                return null;
+            });
+        } catch (RetryableTargetValidationException exception) {
+            throw new IllegalStateException("Validation failed for " + definition.getName()
+                    + " after retrying transient failures: " + exception.getMessage(), exception);
         }
-        throw new IllegalStateException("Validation call failed for " + definition.getName(), lastFailure);
+    }
+
+    private void validateTargetAttempt(RequestDefinition definition, HttpRequest request) {
+        try {
+            int status = HTTP.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+            if (status == 401) {
+                throw new IllegalStateException("Validation failed for " + definition.getName()
+                        + ": target returned HTTP 401 Unauthorized; check the authentication configuration");
+            }
+            if (status == 404) {
+                throw new IllegalStateException("Validation failed for " + definition.getName()
+                        + ": target returned HTTP 404 Not Found; check the URL and request path");
+            }
+            if (status >= 500) {
+                throw new RetryableTargetValidationException("target returned HTTP " + status);
+            }
+        } catch (IOException exception) {
+            throw new RetryableTargetValidationException("network error calling target", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Validation interrupted", exception);
+        }
+    }
+
+    private static final class RetryableTargetValidationException extends RuntimeException {
+        private RetryableTargetValidationException(String message) {
+            super(message);
+        }
+
+        private RetryableTargetValidationException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     private void provisionWorkers(WorkRequest request) {
